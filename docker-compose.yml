@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - uploaded_videos:/app/uploads
+    environment:
+      - DATABASE_URL=mysql+pymysql://gaituser:gaitpass@db/gaitdb
+      - JWT_SECRET=your-super-secret-key-change-this
+      - CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_DATABASE=gaitdb
+      - MYSQL_USER=gaituser
+      - MYSQL_PASSWORD=gaitpass
+      - MYSQL_ROOT_PASSWORD=rootpass
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    ports:
+      - "8080:80"
+    environment:
+      - PMA_HOST=db
+      - PMA_USER=gaituser
+      - PMA_PASSWORD=gaitpass
+    depends_on:
+      - db
+
+volumes:
+  mysql_data:
+  uploaded_videos:
