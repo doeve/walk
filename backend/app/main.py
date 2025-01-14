@@ -1,4 +1,5 @@
-# app/main.py
+
+
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -9,12 +10,55 @@ import os
 import shutil
 from datetime import datetime
 import json
+import torch
+import torch.distributed as dist
+import yaml
+import numpy as np
+from modeling import models as op_models
+from data import transform
+import logging
+from utils import get_msg_mgr
+
+
+
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
+
+
+
+os.environ['MASTER_ADDR'] = 'localhost'
+os.environ['MASTER_PORT'] = '12355'
+
+if not dist.is_initialized():
+    dist.init_process_group(backend='gloo', rank=0, world_size=1)
+
+msg_mgr = get_msg_mgr()
+msg_mgr.init_manager(
+    save_path="./log",
+    log_to_file=False, 
+    log_iter=100
+)
+
+with open('/app/OpenGait/configs/gaitbase/gaitbase_ccpg.yaml', 'r') as f:
+    cfg = yaml.safe_load(f)
+
+if 'data_cfg' not in cfg:
+    cfg['data_cfg'] = {
+        'dataset_name': 'CASIA-B',
+        'num_workers': 1,
+        'dataset_root': '',
+        'test_dataset_name': 'CASIA-B'
+    }
+
+model = op_models.Baseline(cfg, training=False)
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,11 +73,9 @@ async def startup_event():
     except Exception as e:
         print(f"Error during database initialization: {e}")
 
-# Ensure upload directories exist
 os.makedirs("uploads/training", exist_ok=True)
 os.makedirs("uploads/prediction", exist_ok=True)
 
-# User endpoints
 @app.post("/users/", response_model=schemas.User)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = crud.get_user_by_email(db, email=user.email)
@@ -53,47 +95,52 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
-# Training endpoints
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+model.load_state_dict(torch.load('OpenGait/pretrained_models/gaitgl_CASIA-B.pt', map_location=DEVICE))
+
+model.to(DEVICE)
+model.eval()
+
 async def process_training_video(training_session_id: int, video_path: str, db: Session):
     """Background task to process training video"""
     try:
         print(f"Processing video for training session {training_session_id}")
-        # Update session status to processing
         crud.update_training_session_status(db, training_session_id, schemas.SessionStatus.processing)
         
-        # TODO: Implement actual video processing logic here
-        # This would include:
-        # 1. Extract gait features from the video
-        # 2. Create gait pattern
-        # 3. Calculate metrics
+        sequences = transform.extract_gait_sequences(video_path)
+        with torch.no_grad():
+            features = model(sequences.to(DEVICE))
+            feature_vector = features.cpu().numpy()
         
-        # For now, we'll create dummy pattern data
         pattern_data = {
-            "features": {
-                "stride_length": 120.5,
-                "step_width": 30.2,
-                "cadence": 110.0
+            "features": feature_vector.tolist(), 
+            "metadata": {
+                "model_version": "OpenGait_v1",
+                "feature_dim": feature_vector.shape[-1]
             }
         }
         
-        # Create gait pattern
+        confidence_score = float(np.mean(np.abs(feature_vector)))
+        
         pattern = schemas.GaitPatternCreate(
             user_id=db.query(models.TrainingSession).get(training_session_id).user_id,
             pattern_data=pattern_data,
-            confidence_score=0.95
+            confidence_score=confidence_score
         )
         db_pattern = crud.create_gait_pattern(db, pattern)
         
-        # Update session status to completed
         crud.update_training_session_status(db, training_session_id, schemas.SessionStatus.completed)
         
     except Exception as e:
+        print(f"Error in training processing: {str(e)}")
         crud.update_training_session_status(
             db, 
             training_session_id, 
             schemas.SessionStatus.failed,
             str(e)
         )
+
 
 @app.post("/training/upload/", response_model=schemas.TrainingSession)
 async def create_training_session(
@@ -103,12 +150,14 @@ async def create_training_session(
     db: Session = Depends(get_db)
 ):
     print(f"Received video for user {user_id}")
-    # Verify user exists
+
+
     db_user = crud.get_user(db, user_id=user_id)
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Save video file
+
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"training_{user_id}_{timestamp}.mp4"
     file_location = f"uploads/training/{filename}"
@@ -119,7 +168,8 @@ async def create_training_session(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Could not save video file")
     
-    # Create training session
+
+
     training_session = schemas.TrainingSessionCreate(
         user_id=user_id,
         video_path=file_location,
@@ -128,7 +178,8 @@ async def create_training_session(
     
     db_session = crud.create_training_session(db, training_session)
     
-    # Start background processing
+
+
     background_tasks.add_task(
         process_training_video,
         db_session.id,
@@ -150,29 +201,56 @@ def get_user_training_sessions(
         raise HTTPException(status_code=404, detail="User not found")
     return crud.get_user_training_sessions(db, user_id, skip, limit)
 
-# Prediction endpoints
+
+
 async def process_prediction_video(video_path: str, db: Session) -> dict:
     """Process video for prediction"""
-    # TODO: Implement actual prediction logic
-    # This would include:
-    # 1. Extract gait features
-    # 2. Compare with stored patterns
-    # 3. Return best matches with confidence scores
-    
-    # Dummy prediction results
-    return {
-        "predictions": [
-            {"user_id": 1, "confidence": 0.85},
-            {"user_id": 2, "confidence": 0.65}
-        ]
-    }
+    try:
+
+
+        sequences = transform.extract_gait_sequences(video_path)
+        with torch.no_grad():
+            input_features = model(sequences.to(DEVICE))
+            input_vector = input_features.cpu().numpy()
+        
+
+
+        stored_patterns = crud.get_all_gait_patterns(db)
+        
+        predictions = []
+        for pattern in stored_patterns:
+            stored_vector = np.array(pattern.pattern_data["features"])
+            
+
+
+            similarity = np.dot(input_vector.flatten(), stored_vector.flatten()) / (
+                np.linalg.norm(input_vector.flatten()) * np.linalg.norm(stored_vector.flatten())
+            )
+            
+            predictions.append({
+                "user_id": pattern.user_id,
+                "confidence": float(similarity)
+            })
+        
+
+
+        predictions.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        return {
+            "predictions": predictions[:5]  # Return top 5 matches
+        }
+        
+    except Exception as e:
+        print(f"Error in prediction processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 @app.post("/predict", response_model=schemas.PredictionLog)
 async def create_prediction(
     video: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # Save video file
+
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"prediction_{timestamp}.mp4"
     file_location = f"uploads/prediction/{filename}"
@@ -183,13 +261,16 @@ async def create_prediction(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Could not save video file")
     
-    # Process video for prediction
+
+
     results = await process_prediction_video(file_location, db)
     
-    # Get highest confidence prediction
+
+
     best_prediction = max(results["predictions"], key=lambda x: x["confidence"])
     
-    # Create prediction log
+
+
     prediction_log = schemas.PredictionLogCreate(
         input_type=schemas.InputType.video,
         predicted_user_id=best_prediction["user_id"],
@@ -212,7 +293,8 @@ def get_user_predictions(
         raise HTTPException(status_code=404, detail="User not found")
     return crud.get_user_predictions(db, user_id, skip, limit)
 
-# Gait pattern endpoints
+
+
 @app.get("/gait-patterns/{user_id}", response_model=List[schemas.GaitPattern])
 def get_user_gait_patterns(
     user_id: int,
@@ -225,7 +307,8 @@ def get_user_gait_patterns(
         raise HTTPException(status_code=404, detail="User not found")
     return crud.get_user_gait_patterns(db, user_id, skip, limit)
 
-# Health check endpoint
+
+
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}

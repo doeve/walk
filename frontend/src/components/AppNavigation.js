@@ -15,7 +15,7 @@ const AppNavigation = () => {
     {
       key: '/',
       icon: <VideoCameraOutlined />,
-      label: 'Subject Guessing'
+      label: 'Gait Recognition'
     },
     {
       key: '/training',
@@ -31,9 +31,6 @@ const AppNavigation = () => {
 
   return (
     <div className="h-full">
-      <div className="p-4 text-lg font-semibold border-b border-gray-200">
-        Gait Analysis
-      </div>
       <Menu
         mode="inline"
         selectedKeys={[location.pathname]}

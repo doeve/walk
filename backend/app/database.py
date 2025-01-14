@@ -23,15 +23,9 @@ Base = declarative_base()
 
 # Add this function for initial table creation
 def init_db():
-    """Initialize database tables with proper transaction management"""
-    # Create a new connection specifically for initialization
-    # with engine.begin() as connection:
     Base.metadata.create_all(bind=engine)
 
 def get_db():
-    """
-    Dependency function to get DB session
-    """
     db = SessionLocal()
     try:
         yield db

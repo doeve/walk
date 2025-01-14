@@ -110,3 +110,6 @@ def get_session_parameters(db: Session, session_id: int):
     return db.query(models.TrainingParameters)\
              .filter(models.TrainingParameters.session_id == session_id)\
              .all()
+
+def get_all_gait_patterns(db: Session):
+    return db.query(models.GaitPattern).filter(models.GaitPattern.is_active == True).all()

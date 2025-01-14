@@ -1,4 +1,5 @@
-# app/models.py
+
+
 from sqlalchemy import Column, Integer, String, DateTime, Float, JSON, Enum, ForeignKey, Boolean, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -13,7 +14,6 @@ class User(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
-    # Relationships
     gait_patterns = relationship("GaitPattern", back_populates="user")
     training_sessions = relationship("TrainingSession", back_populates="user")
     predictions = relationship("PredictionLog", back_populates="predicted_user")
@@ -28,7 +28,6 @@ class GaitPattern(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=func.now())
 
-    # Relationships
     user = relationship("User", back_populates="gait_patterns")
     metrics = relationship("GaitMetrics", back_populates="pattern")
 
@@ -44,7 +43,6 @@ class TrainingSession(Base):
     completed_at = Column(DateTime)
     error_message = Column(Text)
 
-    # Relationships
     user = relationship("User", back_populates="training_sessions")
     parameters = relationship("TrainingParameters", back_populates="session")
 
@@ -59,7 +57,6 @@ class PredictionLog(Base):
     video_path = Column(String(255))
     created_at = Column(DateTime, default=func.now())
 
-    # Relationships
     predicted_user = relationship("User", back_populates="predictions")
 
 class GaitMetrics(Base):
@@ -74,7 +71,6 @@ class GaitMetrics(Base):
     symmetry_score = Column(Float)
     created_at = Column(DateTime, default=func.now())
 
-    # Relationships
     pattern = relationship("GaitPattern", back_populates="metrics")
 
 class TrainingParameters(Base):
@@ -86,5 +82,4 @@ class TrainingParameters(Base):
     parameter_value = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
-    # Relationships
     session = relationship("TrainingSession", back_populates="parameters")

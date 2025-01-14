@@ -12,6 +12,7 @@ services:
       - DATABASE_URL=mysql+pymysql://gaituser:gaitpass@db/gaitdb
       - JWT_SECRET=your-super-secret-key-change-this
       - CORS_ORIGINS=http://localhost:3000
+      - PYTHONPATH=/app/OpenGait/opengait
     depends_on:
       - db
 

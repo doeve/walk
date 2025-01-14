@@ -62,11 +62,11 @@ const Training = () => {
 
   const stopRecording = () => {
     setIsRecording(false);
-    // Here you would typically handle the recorded video data
+    // Stop recording and save video
     message.success('Recording completed');
   };
 
-  // Mock statistics for demonstration
+  //test stats
   const stats = {
     totalSessions: 24,
     successRate: 92,

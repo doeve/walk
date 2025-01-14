@@ -2,7 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Layout } from 'antd';
 import AppNavigation from './components/AppNavigation';
-import SubjectGuessing from './pages/SubjectGuessing';
+import GaitRecognition from './pages/GaitRecognition';
 import Training from './pages/Training';
 import Users from './pages/Users';
 
@@ -17,7 +17,7 @@ function App() {
         </Sider>
         <Content className="p-6 bg-white">
           <Routes>
-            <Route path="/" element={<SubjectGuessing />} />
+            <Route path="/" element={<GaitRecognition />} />
             <Route path="/training" element={<Training />} />
             <Route path="/users" element={<Users />} />
           </Routes>
