@@ -13,6 +13,9 @@ services:
       - JWT_SECRET=your-super-secret-key-change-this
       - CORS_ORIGINS=http://localhost:3000
       - PYTHONPATH=/app/OpenGait/opengait
+      - CUDA_VISIBLE_DEVICES=-1
+      - TF_FORCE_GPU_ALLOW_GROWTH=false
+      - TORCH_DEVICE=cpu
     depends_on:
       - db
 

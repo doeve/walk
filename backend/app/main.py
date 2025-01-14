@@ -20,9 +20,6 @@ import logging
 from utils import get_msg_mgr
 
 
-
-
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
@@ -41,16 +38,8 @@ msg_mgr.init_manager(
     log_iter=100
 )
 
-with open('/app/OpenGait/configs/gaitbase/gaitbase_ccpg.yaml', 'r') as f:
+with open('/app/OpenGait/configs/gaitbase/gaitbase_da_casiab.yaml', 'r') as f:
     cfg = yaml.safe_load(f)
-
-if 'data_cfg' not in cfg:
-    cfg['data_cfg'] = {
-        'dataset_name': 'CASIA-B',
-        'num_workers': 1,
-        'dataset_root': '',
-        'test_dataset_name': 'CASIA-B'
-    }
 
 model = op_models.Baseline(cfg, training=False)
 
@@ -95,7 +84,8 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = 'cpu'
 
 model.load_state_dict(torch.load('OpenGait/pretrained_models/gaitgl_CASIA-B.pt', map_location=DEVICE))
 

@@ -21,4 +21,4 @@ RUN export PYTHONPATH=/app/OpenGait/opengait
 COPY . /app/
 
 # Run the application with live reload enabled
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "../app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
