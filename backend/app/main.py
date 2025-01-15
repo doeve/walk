@@ -38,6 +38,9 @@ msg_mgr.init_manager(
     log_iter=100
 )
 
+# gaitbase_path = '/app/OpenGait/configs/gaitbase/gaitbase_da_casiab.yaml'
+gaotnase_path = '/app/OpenGait/configs/gaitbase/gaitbase_custom.yaml'
+
 with open('/app/OpenGait/configs/gaitbase/gaitbase_da_casiab.yaml', 'r') as f:
     cfg = yaml.safe_load(f)
 
@@ -85,7 +88,7 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
     return db_user
 
 # DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-DEVICE = 'cpu'
+DEVICE = torch.device('cpu')
 
 model.load_state_dict(torch.load('OpenGait/pretrained_models/gaitgl_CASIA-B.pt', map_location=DEVICE))
 
