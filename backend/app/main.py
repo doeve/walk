@@ -1,53 +1,24 @@
-
-
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from . import crud, models, schemas
-from .database import engine, get_db, init_db
 from typing import List
-import os
+from . import crud, models, schemas
+from .database import engine, SessionLocal, get_db
+from .gait_recognition import GaitFeatureExtractor, GaitRecognitionSystem
 import shutil
+import os
+from pathlib import Path
 from datetime import datetime
-import json
-import torch
-import torch.distributed as dist
-import yaml
-import numpy as np
-from modeling import models as op_models
-from data import transform
 import logging
-from utils import get_msg_mgr
+from typing import Optional
 
-
+# Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger()
-
-
-
-os.environ['MASTER_ADDR'] = 'localhost'
-os.environ['MASTER_PORT'] = '12355'
-
-if not dist.is_initialized():
-    dist.init_process_group(backend='gloo', rank=0, world_size=1)
-
-msg_mgr = get_msg_mgr()
-msg_mgr.init_manager(
-    save_path="./log",
-    log_to_file=False, 
-    log_iter=100
-)
-
-# gaitbase_path = '/app/OpenGait/configs/gaitbase/gaitbase_da_casiab.yaml'
-gaotnase_path = '/app/OpenGait/configs/gaitbase/gaitbase_custom.yaml'
-
-with open('/app/OpenGait/configs/gaitbase/gaitbase_da_casiab.yaml', 'r') as f:
-    cfg = yaml.safe_load(f)
-
-model = op_models.Baseline(cfg, training=False)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,17 +27,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Create upload directories
+UPLOAD_DIR = Path("uploads")
+TRAINING_DIR = UPLOAD_DIR / "training"
+PREDICTION_DIR = UPLOAD_DIR / "prediction"
+MODEL_DIR = Path("models")
+
+for dir in [TRAINING_DIR, PREDICTION_DIR, MODEL_DIR]:
+    dir.mkdir(parents=True, exist_ok=True)
+
+# Initialize gait recognition system
+gait_system = None
+
 @app.on_event("startup")
 async def startup_event():
-    print("Starting up...")
+    """Initialize the application."""
+    global gait_system
     try:
-        init_db()
-        print("Database initialized successfully.")
+        # Initialize database
+        # init_db()
+        logger.info("Database tables created successfully")
+        
+        # Create upload directories
+        for dir in [TRAINING_DIR, PREDICTION_DIR, MODEL_DIR]:
+            dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize gait recognition system with a fresh database session
+        db = next(get_db())
+        try:
+            gait_system = GaitRecognitionSystem(
+                model_path=str(MODEL_DIR / "gait_model"),
+                db=db
+            )
+            logger.info("Gait recognition system initialized")
+        finally:
+            db.close()
+            
     except Exception as e:
-        print(f"Error during database initialization: {e}")
-
-os.makedirs("uploads/training", exist_ok=True)
-os.makedirs("uploads/prediction", exist_ok=True)
+        logger.error(f"Error during startup: {e}")
+        raise
 
 @app.post("/users/", response_model=schemas.User)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
@@ -87,221 +86,174 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
 
-# DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-DEVICE = torch.device('cpu')
-
-model.load_state_dict(torch.load('OpenGait/pretrained_models/gaitgl_CASIA-B.pt', map_location=DEVICE))
-
-model.to(DEVICE)
-model.eval()
-
-async def process_training_video(training_session_id: int, video_path: str, db: Session):
-    """Background task to process training video"""
+async def save_upload_file(upload_file: UploadFile, destination: Path) -> Path:
+    """Save an uploaded file to the specified destination."""
     try:
-        print(f"Processing video for training session {training_session_id}")
-        crud.update_training_session_status(db, training_session_id, schemas.SessionStatus.processing)
-        
-        sequences = transform.extract_gait_sequences(video_path)
-        with torch.no_grad():
-            features = model(sequences.to(DEVICE))
-            feature_vector = features.cpu().numpy()
-        
-        pattern_data = {
-            "features": feature_vector.tolist(), 
-            "metadata": {
-                "model_version": "OpenGait_v1",
-                "feature_dim": feature_vector.shape[-1]
-            }
-        }
-        
-        confidence_score = float(np.mean(np.abs(feature_vector)))
-        
-        pattern = schemas.GaitPatternCreate(
-            user_id=db.query(models.TrainingSession).get(training_session_id).user_id,
-            pattern_data=pattern_data,
-            confidence_score=confidence_score
+        with destination.open("wb") as buffer:
+            shutil.copyfileobj(upload_file.file, buffer)
+        return destination
+    finally:
+        upload_file.file.close()
+
+async def process_training(
+    training_session_id: int,
+    video_path: Path,
+    db: Session
+):
+    """Background task to process training video."""
+    try:
+        # Update session status to processing
+        crud.update_training_session_status(
+            db, 
+            training_session_id, 
+            schemas.SessionStatus.processing
         )
-        db_pattern = crud.create_gait_pattern(db, pattern)
         
-        crud.update_training_session_status(db, training_session_id, schemas.SessionStatus.completed)
+        # Get training session
+        session = crud.get_training_session(db, training_session_id)
+        if not session:
+            raise ValueError("Training session not found")
+        
+        # Process video and extract patterns
+        results = await gait_system.process_training_video(str(video_path), session.user_id)
+        
+        # Create gait pattern
+        pattern = schemas.GaitPatternCreate(
+            user_id=session.user_id,
+            pattern_data=results["pattern_data"],
+            confidence_score=results["confidence_score"]
+        )
+        crud.create_gait_pattern(db, pattern)
+        
+        # Update session status to completed
+        crud.update_training_session_status(
+            db, 
+            training_session_id, 
+            schemas.SessionStatus.completed
+        )
         
     except Exception as e:
-        print(f"Error in training processing: {str(e)}")
+        logger.error(f"Error processing training video: {e}")
         crud.update_training_session_status(
             db, 
             training_session_id, 
             schemas.SessionStatus.failed,
             str(e)
         )
+        raise
 
-
-@app.post("/training/upload/", response_model=schemas.TrainingSession)
-async def create_training_session(
+@app.post("/training/upload/")
+async def upload_training_video(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
-    user_id: int = Form(...),
+    userId: int = Form(...),
     db: Session = Depends(get_db)
 ):
-    print(f"Received video for user {user_id}")
-
-
-    db_user = crud.get_user(db, user_id=user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"training_{user_id}_{timestamp}.mp4"
-    file_location = f"uploads/training/{filename}"
-    
+    """Handle training video upload and processing."""
     try:
-        with open(file_location, "wb+") as file_object:
-            shutil.copyfileobj(video.file, file_object)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Could not save video file")
-    
-
-
-    training_session = schemas.TrainingSessionCreate(
-        user_id=user_id,
-        video_path=file_location,
-        status=schemas.SessionStatus.pending
-    )
-    
-    db_session = crud.create_training_session(db, training_session)
-    
-
-
-    background_tasks.add_task(
-        process_training_video,
-        db_session.id,
-        file_location,
-        db
-    )
-    
-    return db_session
-
-@app.get("/training/{user_id}", response_model=List[schemas.TrainingSession])
-def get_user_training_sessions(
-    user_id: int,
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    db_user = crud.get_user(db, user_id=user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return crud.get_user_training_sessions(db, user_id, skip, limit)
-
-
-
-async def process_prediction_video(video_path: str, db: Session) -> dict:
-    """Process video for prediction"""
-    try:
-
-
-        sequences = transform.extract_gait_sequences(video_path)
-        with torch.no_grad():
-            input_features = model(sequences.to(DEVICE))
-            input_vector = input_features.cpu().numpy()
+        # Verify user exists
+        user = crud.get_user(db, user_id=userId)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
         
-
-
-        stored_patterns = crud.get_all_gait_patterns(db)
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_path = TRAINING_DIR / f"training_{userId}_{timestamp}.mp4"
         
-        predictions = []
-        for pattern in stored_patterns:
-            stored_vector = np.array(pattern.pattern_data["features"])
-            
-
-
-            similarity = np.dot(input_vector.flatten(), stored_vector.flatten()) / (
-                np.linalg.norm(input_vector.flatten()) * np.linalg.norm(stored_vector.flatten())
+        # Save uploaded file
+        await save_upload_file(video, video_path)
+        
+        # Create training session
+        session = crud.create_training_session(
+            db,
+            schemas.TrainingSessionCreate(
+                user_id=userId,
+                video_path=str(video_path),
+                status=schemas.SessionStatus.pending
             )
-            
-            predictions.append({
-                "user_id": pattern.user_id,
-                "confidence": float(similarity)
-            })
+        )
         
-
-
-        predictions.sort(key=lambda x: x["confidence"], reverse=True)
+        # Start background processing
+        background_tasks.add_task(
+            process_training,
+            session.id,
+            video_path,
+            db
+        )
         
         return {
-            "predictions": predictions[:5]  # Return top 5 matches
+            "message": "Training video uploaded successfully",
+            "sessionId": session.id,
+            "status": session.status
         }
         
     except Exception as e:
-        print(f"Error in prediction processing: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        logger.error(f"Error handling training upload: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/predict", response_model=schemas.PredictionLog)
-async def create_prediction(
+@app.post("/api/gait/recognize")
+async def recognize_gait(
     video: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"prediction_{timestamp}.mp4"
-    file_location = f"uploads/prediction/{filename}"
-    
+    """Process video for gait recognition."""
     try:
-        with open(file_location, "wb+") as file_object:
-            shutil.copyfileobj(video.file, file_object)
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_path = PREDICTION_DIR / f"prediction_{timestamp}.mp4"
+        
+        # Save uploaded file
+        await save_upload_file(video, video_path)
+        
+        # Process video for prediction
+        results = await gait_system.process_prediction_video(str(video_path))
+        
+        # Get top prediction
+        if results["predictions"]:
+            top_prediction = results["predictions"][0]
+            
+            # Log prediction
+            prediction = schemas.PredictionCreate(
+                video_path=str(video_path),
+                predictions=results["predictions"],
+                confidence_score=top_prediction["confidence"],
+            )
+            crud.create_prediction(db, prediction)
+            
+            # Enhance response with user details
+            enhanced_predictions = []
+            for pred in results["predictions"]:
+                user = crud.get_user(db, user_id=pred["user_id"])
+                if user:
+                    enhanced_predictions.append({
+                        "userId": user.id,
+                        "name": user.name,
+                        "confidence": pred["confidence"]
+                    })
+            
+            return {
+                "predictions": enhanced_predictions,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        return {
+            "predictions": [],
+            "timestamp": datetime.now().isoformat()
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Could not save video file")
-    
+        logger.error(f"Error processing prediction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-    results = await process_prediction_video(file_location, db)
-    
-
-
-    best_prediction = max(results["predictions"], key=lambda x: x["confidence"])
-    
-
-
-    prediction_log = schemas.PredictionLogCreate(
-        input_type=schemas.InputType.video,
-        predicted_user_id=best_prediction["user_id"],
-        confidence_score=best_prediction["confidence"],
-        prediction_data=results,
-        video_path=file_location
-    )
-    
-    return crud.create_prediction_log(db, prediction_log)
-
-@app.get("/predictions/{user_id}", response_model=List[schemas.PredictionLog])
-def get_user_predictions(
-    user_id: int,
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    db_user = crud.get_user(db, user_id=user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return crud.get_user_predictions(db, user_id, skip, limit)
-
-
-
-@app.get("/gait-patterns/{user_id}", response_model=List[schemas.GaitPattern])
-def get_user_gait_patterns(
-    user_id: int,
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    db_user = crud.get_user(db, user_id=user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return crud.get_user_gait_patterns(db, user_id, skip, limit)
-
-
-
+# Health check endpoint
 @app.get("/health")
-def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+async def health_check():
+    """Check API health status."""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat()
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

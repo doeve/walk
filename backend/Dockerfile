@@ -15,7 +15,6 @@ COPY requirements.txt /app/
 
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-RUN export PYTHONPATH=/app/OpenGait/opengait
 
 # Copy the entire backend code into the container
 COPY . /app/
